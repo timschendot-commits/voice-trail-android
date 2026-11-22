@@ -5,6 +5,7 @@ This runs only on a disposable Android emulator. The images contain synthetic
 label text. No application API, instrumentation hook or OCR stub is used.
 """
 import argparse
+from datetime import date
 import json
 import re
 import subprocess
@@ -114,12 +115,20 @@ class Device:
 
 
 def make_image(path, label):
-    image = Image.new("RGB", (1280, 420), "white")
+    if not label.isascii():
+        # Ubuntu fonts-noto-cjk: face index 2 is Noto Sans CJK SC.
+        path_sc = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+        font = ImageFont.truetype(path_sc, 82, index=2)
+        if "CJK SC" not in font.getname()[0]:
+            raise EnvironmentBlocked("A Simplified Chinese Noto Sans CJK SC font is required")
+    else:
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 92)
+        except OSError:
+            font = ImageFont.load_default(size=92)
+    width = max(1280, 136 + int(font.getlength(label)) + 1)
+    image = Image.new("RGB", (width, 420), "white")
     draw = ImageDraw.Draw(image)
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 92)
-    except OSError:
-        font = ImageFont.load_default(size=92)
     draw.text((68, 140), label, fill="black", font=font)
     image.save(path)
 
@@ -165,16 +174,23 @@ def choose_image(d, name):
     d.wait(returned, "Android did not return the selected document to the app")
 
 
-def open_vision(d):
+def open_vision(d, chinese=False):
     d.shell("am", "force-stop", APP)
     launch = d.shell("am", "start", "-a", "android.intent.action.MAIN",
                      "-c", "android.intent.category.LAUNCHER", "-n", APP + "/.LauncherActivity")
     if "Error" in launch:
         raise AssertionError("Could not launch the installed APK")
-    d.tap_app(("Look around", "看一看"))
+    if chinese:
+        d.tap_app(("More",))
+        d.tap_app(("Language and display",))
+        d.tap_app(("简体中文",))
+        home = d.wait(lambda r: r if d.node(r, ("说句话",)) is not None else None,
+                      "Could not verify Simplified Chinese home")
+        d.record("home-zh", home)
+    d.tap_app(("看一看",) if chinese else ("Look around",))
     def entered(root):
         if d.node(root, PICK) is not None:
-            d.record("look-around", root)
+            d.record("look-around-zh" if chinese else "look-around", root)
             return True
         texts = [d.label(n) for n in root.iter("node")]
         for msg in texts:
@@ -210,6 +226,10 @@ def read_fixture(d, name, expected, key, report):
     report[key] = {"filename": name, "observed": value}
     d.record(key, root)
     d.tap_app(EXPIRY)
+    if key == "expiry_zh":
+        today = date.fromisoformat(d.shell("date", "+%Y-%m-%d"))
+        printed = date.fromisoformat(expected)
+        relation = "晚于今天" if printed > today else "早于今天" if printed < today else "就是今天"
     def answer(root):
         for n in root.iter("node"):
             if n.get("package") != APP:
@@ -218,6 +238,11 @@ def read_fixture(d, name, expected, key, report):
             if key == "expiry":
                 if expected in v and re.search(r"(?:Line\s+1|第\s*1\s*行)",v,re.I) and (
                         "recognized label date" in v or "识读的标签日期" in v):
+                    return (v,root)
+            elif key == "expiry_zh":
+                if (f"识读的标签日期是 {expected}，{relation}" in v and
+                        f"手机日期 {today}" in v and re.search(r"第\s*1\s*行",v) and
+                        "有效期至" in v and "无法确定" not in v):
                     return (v,root)
             elif "can't establish the expiry" in v or "无法确定有效期" in v:
                 return (v,root)
@@ -247,7 +272,8 @@ def main():
         if d.shell("settings", "get", "global", "airplane_mode_on") != "1":
             raise EnvironmentBlocked("Could not enable emulator airplane mode")
         report["airplane_mode"] = True
-        fixtures = (("trail-exp.png","EXP 2031-07-28"), ("trail-mfg.png","MFG 2029-03-19"))
+        fixtures = (("trail-exp.png","EXP 2031-07-28"), ("trail-mfg.png","MFG 2029-03-19"),
+                    ("trail-exp-zh.png","有效期至：2032年06月18日"))
         for name,label in fixtures:
             path = args.out / name
             make_image(path,label)
@@ -258,6 +284,8 @@ def main():
         open_vision(d)
         read_fixture(d, fixtures[0][0],"2031-07-28","expiry",report)
         read_fixture(d, fixtures[1][0],"2029-03-19","production_only",report)
+        open_vision(d, chinese=True)
+        read_fixture(d, fixtures[2][0],"2032-06-18","expiry_zh",report)
         report["status"] = "passed"
         status = 0
     except EnvironmentBlocked as exc:
