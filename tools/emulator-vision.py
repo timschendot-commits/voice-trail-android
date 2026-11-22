@@ -34,7 +34,7 @@ class Device:
         p = subprocess.run(self.command + list(args), capture_output=True,
                            encoding="utf-8", errors="replace", timeout=25)
         if check and p.returncode:
-            raise RuntimeError(f"adb {args[0]} returned {p.returncode}: {p.stderr[:240]}")
+            raise RuntimeError(f"adb {' '.join(args[:6])} returned {p.returncode}: {(p.stderr + p.stdout)[:480]}")
         return p.stdout.strip()
 
     def shell(self, *args):
@@ -167,8 +167,8 @@ def choose_image(d, name):
 
 def open_vision(d):
     d.shell("am", "force-stop", APP)
-    launch = d.shell("am", "start", "-W", "-a", "android.intent.action.MAIN",
-                     "-c", "android.intent.category.LAUNCHER", "-p", APP)
+    launch = d.shell("am", "start", "-a", "android.intent.action.MAIN",
+                     "-c", "android.intent.category.LAUNCHER", "-n", APP + "/.LauncherActivity")
     if "Error" in launch:
         raise AssertionError("Could not launch the installed APK")
     d.tap_app(("Look around", "看一看"))

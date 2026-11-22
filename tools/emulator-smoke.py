@@ -59,7 +59,8 @@ class Device:
         result = subprocess.run(["adb", "-s", self.serial, *map(str, args)], timeout=timeout,
                                 capture_output=True, encoding="utf-8", errors="replace")
         if result.returncode:
-            raise RuntimeError(f"adb {args[0]} failed ({result.returncode}): {result.stderr.strip()[:160]}")
+            details = (result.stderr + "\n" + result.stdout).strip()
+            raise RuntimeError(f"adb {' '.join(map(str,args[:6]))} failed ({result.returncode}): {details[:480]}")
         return result.stdout.strip()
 
     def ui(self):
@@ -117,8 +118,8 @@ class Device:
 
 
 def launcher(d):
-    result = d.adb("shell", "am", "start", "-W", "-a", "android.intent.action.MAIN",
-                   "-c", "android.intent.category.LAUNCHER", "-p", APP)
+    result = d.adb("shell", "am", "start", "-a", "android.intent.action.MAIN",
+                   "-c", "android.intent.category.LAUNCHER", "-n", APP + "/.LauncherActivity")
     if "Error:" in result or "Exception" in result:
         raise AssertionError("Android could not launch the installed APK")
     tree = d.wait(lambda t: button(t, "Speak") is not None or button(t, "说句话") is not None, "home")

@@ -15,7 +15,7 @@ fi
 pkg=com.reecedunn.espeak
 filename="${pkg}_22.apk"
 sha=0a7822fec54d7f7ae759ffedc9afeaa77f809587b171fb2101998787821ec790
-apk=$(mktemp)
+apk=$(mktemp --suffix=.apk)
 trap 'rm -f "$apk"' EXIT
 for repo in https://f-droid.org/repo https://ftp.fau.de/fdroid/repo https://mirror.cyberbits.eu/fdroid/repo; do
   if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \

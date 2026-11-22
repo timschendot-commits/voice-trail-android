@@ -38,6 +38,15 @@ else
 fi
 adb logcat -b events -d -s tts_speak_success:I tts_speak_failure:I 2>/dev/null | tail -60 > "$out/tts-events.txt"
 adb logcat -b crash -d -t 200 > "$out/crashes.txt" 2>/dev/null || true
+echo 'Recent Android speech-engine events'
+tail -5 "$out/tts-events.txt"
+if [[ "$failed" != 0 ]]; then
+  echo 'Visible controls at failed checks'
+  for snap in "$out"/*/*failure.xml "$out"/*/last-observed-app-ui.xml; do
+    if [[ -f "$snap" ]]; then head -c 6000 "$snap"; echo; fi
+  done
+  tail -40 "$out/crashes.txt"
+fi
 {
   echo '## Published APK device results'
   echo
@@ -45,7 +54,7 @@ adb logcat -b crash -d -t 200 > "$out/crashes.txt" 2>/dev/null || true
   for report in "$out"/*/*.json; do
     [[ -f "$report" ]] || continue
     echo
-    echo "`$report`"
+    printf '`%s`\n' "$report"
     echo '~~~json'
     cat "$report"
     echo '~~~'

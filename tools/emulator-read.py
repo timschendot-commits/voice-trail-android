@@ -31,7 +31,7 @@ class Device:
         return proc.stdout.strip()
 
     def launch(self):
-        self.shell("am", "start", "-W", "-a", "android.intent.action.MAIN",
+        self.shell("am", "start", "-a", "android.intent.action.MAIN",
                    "-c", "android.intent.category.LAUNCHER", "-n", PKG + "/.LauncherActivity")
 
     def ui(self):
