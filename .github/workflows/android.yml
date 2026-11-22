@@ -35,6 +35,7 @@ jobs:
           go mod download github.com/JopenChen/dsh-go
           go mod verify
           go test -mod=mod -race ./...
+          cat go.sum
       - name: Cross-compile the embedded Go libraries
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"

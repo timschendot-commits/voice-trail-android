@@ -25,6 +25,20 @@ public final class Command {
         return new Command(kind, "", "", -1, -1);
     }
 
+    /** Attaches dictated content only to a known, empty draft. Never treats it as a new command. */
+    public Command withMessage(String rawText) {
+        if (!"wechat_text".equals(kind) || !detail.isEmpty() || target.isEmpty() ||
+                rawText == null || rawText.length() > 500 || rawText.trim().isEmpty()
+                || rawText.matches("(?s).*[\\p{Cc}\\p{Cf}].*")) return simple("unknown");
+        String body = rawText.trim();
+        String normalized = Normalizer.normalize(body, Normalizer.Form.NFKC);
+        if (UNSAFE.matcher(normalized).find() || SECRET.matcher(normalized).find()
+                || normalized.matches("(?s).*(?<!\\d)\\d{4,8}(?!\\d).*")
+                || normalized.matches("(?s).*(?:\\d[ -]?){12,19}.*")) return simple("manual_handoff");
+        if (MULTI.matcher(normalized).find()) return simple("unknown");
+        return new Command("wechat_text", target, body, -1, -1);
+    }
+
     private static Pattern pattern(String regex) {
         return Pattern.compile(regex, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
     }
@@ -61,7 +75,7 @@ public final class Command {
     private static final Pattern VISION = pattern(
             "^(?:(?:看一看|看看|读一下|读一读)(?:这|这个|这张|这瓶|这盒|这个食品|那个)?.{0,12}"
             + "(?:药盒|说明书|食品标签|有效期|保质期|生产日期|门牌|账单|电梯按钮).{0,12}|"
-            + "(?:read|describe|check) (?:this |the )?(?:medicine label|food label|expiry date|expiration date|"
+            + "(?:look at|read|describe|check) (?:this |the )?(?:medicine label|food label|expiry date|expiration date|"
             + "door number|bill|elevator buttons)(?: for me)?|"
             + "(?:has this (?:medicine|food) expired|is this (?:medicine|food) expired))$");
     private static final Pattern CLOCK = pattern("^(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?$");
@@ -80,7 +94,7 @@ public final class Command {
         switch (lower) {
             case "read": case "read screen": case "read the screen": case "read this screen":
             case "read current screen": case "read the current screen": case "what's on my screen":
-            case "读屏": case "读一下当前屏幕": case "读一下屏幕": case "读当前屏幕":
+            case "读屏": case "读屏幕": case "读一下当前屏幕": case "读一下屏幕": case "读当前屏幕":
             case "朗读当前屏幕": case "朗读屏幕": case "屏幕上有什么": return simple("read_screen");
             case "read code": case "read the code": case "read the verification code": case "read verification code":
             case "read the otp": case "read otp": case "read the code on the screen":
@@ -90,18 +104,20 @@ public final class Command {
             case "停止": case "停": case "取消": case "算了": case "别发": case "不要发送": return simple("cancel");
             case "repeat": case "say that again": case "say it again": case "repeat that":
             case "重复": case "重复一遍": case "再说一遍": case "再读一遍": return simple("repeat");
+            case "retry": case "try again": case "重试": case "重新执行": return simple("retry");
             case "faster": case "speak faster": case "talk faster": case "说快一点": case "说快点": case "快一点": return simple("faster");
             case "slower": case "speak slower": case "slow down": case "说慢一点": case "说慢点": case "慢一点": return simple("slower");
             case "confirm": case "confirm send": case "confirm sending": case "i confirm":
             case "确认": case "确认发送": case "确认继续": return simple("approve");
             case "help": case "what can you do": case "帮助": case "怎么用": case "你能做什么": return simple("help");
             case "look": case "take a look": case "look around": case "describe this": case "read this label":
-            case "看一看": case "看一下": case "拍照看看": case "读取标签": case "看看这瓶药过期没有": return simple("vision");
+            case "看一看": case "看一下": case "拍照看看": case "读取标签": return simple("vision");
+            case "看看这瓶药过期没有": return new Command("vision", "", s, -1, -1);
             default: break;
         }
         if (UNSAFE.matcher(s).find()) return simple("manual_handoff");
         if (MULTI.matcher(s).find() || SECRET.matcher(s).find()) return simple("unknown");
-        if (VISION.matcher(s).matches()) return simple("vision");
+        if (VISION.matcher(s).matches()) return new Command("vision", "", s, -1, -1);
 
         Matcher match = VOICE_ZH.matcher(s);
         if (match.matches()) return contact("wechat_voice", match.group(1), "");
@@ -155,7 +171,9 @@ public final class Command {
     private static Command contact(String kind, String name, String message) {
         String recipient = name.trim();
         if (!label(recipient) || AMBIGUOUS.matcher(recipient).find()) return simple("unknown");
-        return new Command(kind, recipient, message == null ? "" : message.trim(), -1, -1);
+        Command request = new Command(kind, recipient, "", -1, -1);
+        return "wechat_text".equals(kind) && message != null && !message.trim().isEmpty()
+                ? request.withMessage(message) : request;
     }
 
     private static Command clock(String kind, String when, String label) {

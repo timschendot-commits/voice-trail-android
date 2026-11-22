@@ -34,10 +34,11 @@ public final class MainActivity extends Activity {
     private TextView status;
     private String display = "", repeatable = "", session = "", resultId = "", resultSummary = "";
     private Command active, retry;
+    private Command awaitingBody;
     private Runnable consent;
     private String consentTool = "", consentQuestion = "";
     private Consumer<String> microphoneRequest;
-    private boolean listening, showingHome, waitingForVision;
+    private boolean listening, showingHome, waitingForVision, externalWork;
     private long latestSpeech;
     private final Runnable consentTimeout = () -> {
         if (consent != null) cancelWith(t("确认已超时，本次任务已取消。","Confirmation expired. The task was cancelled."));
@@ -45,7 +46,7 @@ public final class MainActivity extends Activity {
     private final Runnable heartbeat = new Runnable() {
         public void run() {
             if (active == null || waitingForVision || consent != null) return;
-            if (!listening && android.os.SystemClock.elapsedRealtime() - latestSpeech > 12500)
+            if (!listening && !voice.isSpeaking() && android.os.SystemClock.elapsedRealtime() - latestSpeech > 12500)
                 say(t("还在处理。","Still working."), null);
             main.postDelayed(this, 15000);
         }
@@ -84,6 +85,7 @@ public final class MainActivity extends Activity {
             listening = false;
             setDisplay(msg);
             if (status != null) status.announceForAccessibility(msg);
+            else Toast.makeText(this,msg,Toast.LENGTH_LONG).show();
         });
         applyVoiceSettings();
         if (PhoneService.get()!=null) PhoneService.get().setLanguage(zh);
@@ -91,7 +93,11 @@ public final class MainActivity extends Activity {
     void applyVoiceSettings() {
         voice.setRate(prefs.getFloat("rate",0.88f)); voice.setVolume(prefs.getFloat("volume",1f));
     }
-    void setPreset(String name) { prefs.edit().putString("preset",name).apply(); }
+    void setPreset(String name) {
+        SharedPreferences.Editor edit=prefs.edit();
+        if (!name.equals(prefs.getString("preset",""))) edit.remove("presetId");
+        edit.putString("preset",name).apply();
+    }
     void changeLanguage(boolean chinese) {
         clearActive("cancel"); voice.destroy();
         zh = chinese; prefs.edit().putBoolean("zh",zh).apply();
@@ -175,7 +181,9 @@ public final class MainActivity extends Activity {
     private void beginListening() {
         if (consent==null && active!=null) clearActive("cancel");
         voice.stop();
-        if (consent!=null) dictate(this::answerConsent); else dictate(this::interpret);
+        if (consent!=null) dictate(this::answerConsent);
+        else if (awaitingBody!=null) dictate(this::acceptBody);
+        else dictate(this::interpret);
     }
     void askNotifications() {
         if (Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
@@ -186,9 +194,16 @@ public final class MainActivity extends Activity {
         }
     }
     void openServiceSettings() {
-        String s=t("接下来是安卓无障碍设置。请找到声迹助手，自己选择是否开启。","Android accessibility settings will open. Find Voice Trail and choose whether to enable it.");
-        say(s,() -> { try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
-            catch(ActivityNotFoundException e) { say(t("请在系统设置搜索无障碍。","Search for accessibility in system settings."),null); } });
+        LinearLayout p=page(t("启用无障碍服务","Enable screen access"));
+        String s=t("声迹助手可以读取你打开的应用，并按已确认的任务操作控件。请在系统无障碍设置中选择声迹助手，自行开启。","Voice Trail can read the open app and operate controls for your requested tasks. In Android accessibility settings, select Voice Trail and choose whether to enable it.");
+        label(p,s);
+        button(p,t("打开系统无障碍设置","Open Android accessibility settings"),() -> {
+            voice.stop();
+            try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+            catch(ActivityNotFoundException e) { Toast.makeText(this,t("请在系统设置搜索无障碍。","Search for accessibility in system settings."),Toast.LENGTH_LONG).show(); }
+        });
+        button(p,t("返回","Back"),this::home);
+        say(s,null);
     }
     @Override public void onRequestPermissionsResult(int request,String[] names,int[] results) {
         super.onRequestPermissionsResult(request,names,results);
@@ -202,6 +217,10 @@ public final class MainActivity extends Activity {
         switch(c.kind) {
             case "cancel": cancelWith(t("已取消。","Cancelled.")); break;
             case "repeat": repeat(); break;
+            case "retry":
+                if (retry!=null) start(retry);
+                else say(t("请重新说出要做的任务。","Please say the full task again."),null);
+                break;
             case "faster": case "slower":
                 float rate=Math.max(.55f,Math.min(1.6f,prefs.getFloat("rate",.88f)+("faster".equals(c.kind)?.1f:-.1f)));
                 prefs.edit().putFloat("rate",rate).apply(); applyVoiceSettings();
@@ -235,11 +254,29 @@ public final class MainActivity extends Activity {
         return true;
     }
     private void start(Command c) {
-        if (!begin(c.kind)) return;
+        if ("wechat_text".equals(c.kind) && c.detail.isEmpty()) {
+            clearActive("cancel"); awaitingBody=c;
+            String idName=c.target;
+            say(t("准备给","Preparing a message for ")+idName+t("发什么文字？提示音后请说正文，或说取消。",". After the tone, dictate the message, or say cancel."),
+                    () -> { if(awaitingBody==c) dictate(this::acceptBody); });
+            return;
+        }
+        boolean presetText="wechat_text".equals(c.kind) && c.target.equals(prefs.getString("preset",""))
+                && !prefs.getString("presetId","").isEmpty();
+        if (!begin(presetText?"wechat_preset_text":c.kind)) return;
         active=c; final String id=session;
         String goal=summary(c); main.postDelayed(heartbeat,15000);
         TaskAlerts.status(this,zh,id,true,false,t("任务正在进行。","Task in progress."));
         say(goal,() -> { if(id.equals(session)) execute(c,id); });
+    }
+    private void acceptBody(String words) {
+        Command prior=awaitingBody;
+        awaitingBody=null;
+        if(prior==null) return;
+        if("cancel".equals(Command.parse(words).kind)) { cancelWith(t("已取消。","Cancelled.")); return; }
+        Command filled=prior.withMessage(words);
+        if("unknown".equals(filled.kind)) { clarify(); return; }
+        start(filled);
     }
     private String summary(Command c) {
         switch(c.kind) {
@@ -275,17 +312,31 @@ public final class MainActivity extends Activity {
             public boolean allow(String tool) { return id.equals(session) && NativeCore.dispatch(id,tool)==1; }
             public void step(String msg,Runnable next) { if(id.equals(session)) say(msg,() -> { if(id.equals(session)) next.run(); }); }
             public void done(String msg,boolean ok) {
-                if(id.equals(session)) finishTask(!ok?"failed":c.kind.startsWith("wechat_")?"handoff":"done",msg);
+                if(id.equals(session)) finishTask(ok?"done":"failed",msg);
+            }
+            public void handoff(String msg) {
+                if(id.equals(session)) finishTask("handoff",msg);
+            }
+            public void readDone(String finalPart,String replay) {
+                if(id.equals(session)) { finishTask("done",finalPart); repeatable=replay; }
             }
         };
         switch(c.kind) {
-            case "read_code": case "read_screen": phone.readScreenAfterReturn(this,"read_code".equals(c.kind),zh,flow); break;
-            case "open_app": phone.openApp(c.target,zh,flow); break;
-            case "find_feature": phone.findFeature(c.target,c.detail,zh,flow); break;
+            case "read_code": case "read_screen":
+                externalWork=true; phone.readScreenAfterReturn(this,"read_code".equals(c.kind),zh,flow); break;
+            case "open_app": externalWork=true; phone.openApp(c.target,zh,flow); break;
+            case "find_feature": externalWork=true; phone.findFeature(c.target,c.detail,zh,flow); break;
             case "wechat_text": case "wechat_voice":
                 boolean preset=c.target.equals(prefs.getString("preset",""));
-                Runnable prepare=() -> phone.weChat(c.target,c.detail,"wechat_voice".equals(c.kind),preset,zh,flow);
-                if(preset) prepare.run();
+                Runnable prepare=() -> {
+                    externalWork=true;
+                    phone.weChat(c.target,c.detail,"wechat_voice".equals(c.kind),preset,zh,flow);
+                };
+                if(preset && "wechat_text".equals(c.kind) && !prefs.getString("presetId","").isEmpty())
+                    requestConsent("review_preset_send",t("确认后将向常用联系人","After confirmation I will send to trusted contact ")+c.target+
+                            t("发送以下文字：",". The message is: ")+c.detail+
+                            t("。只有核对微信号和草稿后才会按发送。",". I will send only after checking the WeChat ID and draft."),prepare);
+                else if(preset) prepare.run();
                 else requestConsent("review_recipient",t("对方不是常用联系人。听到的名字是","This is not your trusted contact. I heard ")+c.target+
                         t("。确认后只打开聊天，发送由你完成。",". Confirmation opens the chat. You control sending."),prepare);
                 break;
@@ -364,16 +415,18 @@ public final class MainActivity extends Activity {
     }
     private void clearActive(String outcome) {
         main.removeCallbacks(consentTimeout); main.removeCallbacks(heartbeat);
-        microphoneRequest=null; listening=false;
+        microphoneRequest=null; listening=false; awaitingBody=null;
         consent=null; consentTool=""; consentQuestion="";
         if(!session.isEmpty()) {
             NativeCore.event(session,outcome); NativeCore.close(session); session="";
             if(PhoneService.get()!=null) PhoneService.get().cancel();
             CloudAssist.cancel();
         }
-        active=null; waitingForVision=false;
+        active=null; waitingForVision=false; externalWork=false;
     }
     private void cancelWith(String msg) {
+        if(PhoneService.get()!=null && PhoneService.get().hasUnverifiedSend())
+            msg=t("已停止核对。发送按钮可能已被按下，请先检查微信对话，避免重复发送。","Verification stopped after a possible send. Check the chat before sending again.");
         clearActive("cancel"); voice.stop(); TaskAlerts.clear(this); say(msg,null);
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
@@ -386,6 +439,17 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() {
         if(!showingHome) { voice.stop(); microphoneRequest=null; home(); }
         else { clearActive("cancel"); voice.stop(); super.onBackPressed(); }
+    }
+    @Override protected void onStop() {
+        super.onStop();
+        // A deliberate handoff to the original app keeps its bounded task alive.
+        // A user leaving a confirmation or dictation screen cancels that request.
+        if(!externalWork && !waitingForVision && microphoneRequest==null &&
+                (listening || consent!=null || awaitingBody!=null || !session.isEmpty())) {
+            clearActive("cancel"); voice.stop();
+            setDisplay(t("已离开指令页，本次操作已取消。","You left the command screen. This request was cancelled."));
+            TaskAlerts.clear(this);
+        }
     }
     @Override protected void onDestroy() {
         clearActive("cancel"); main.removeCallbacksAndMessages(null); voice.destroy(); super.onDestroy();

@@ -9,6 +9,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,6 +21,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -30,6 +32,8 @@ public final class PhoneService extends AccessibilityService {
         /** Continue after narration finishes. All methods are invoked on the main thread. */
         void step(String text, Runnable next);
         void done(String text, boolean success);
+        default void handoff(String text) { done(text, true); }
+        default void readDone(String finalPart, String replay) { done(finalPart, true); }
         default boolean allow(String tool) { return false; }
     }
     private static final String WECHAT = "com.tencent.mm";
@@ -114,7 +118,10 @@ public final class PhoneService extends AccessibilityService {
         return km != null && km.isKeyguardLocked();
     }
     @Override public void onAccessibilityEvent(AccessibilityEvent e) {
-        // Do not collect text or move accessibility focus. The button is redundant on our own screen.
+        // Only window identity is inspected here. Unrelated foreground changes end the run.
+        if (current != null && e != null &&
+                (e.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                        e.getEventType() == AccessibilityEvent.TYPE_WINDOWS_CHANGED)) current.checkForeground();
         if (overlay == null || e == null || e.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
         CharSequence pkg = e.getPackageName();
         if (pkg == null) return;
@@ -138,6 +145,7 @@ public final class PhoneService extends AccessibilityService {
         current = null;
         main.removeCallbacksAndMessages(null);
     }
+    public boolean hasUnverifiedSend() { return current != null && current.sendAttempted; }
     private Run begin(boolean zh, Flow callback) {
         cancel();
         Run run = new Run(zh, callback);
@@ -149,6 +157,12 @@ public final class PhoneService extends AccessibilityService {
     private final class Run {
         final boolean zh;
         final Flow callback;
+        String foregroundPackage;
+        String launchTarget;
+        String launchOrigin;
+        boolean sendAttempted;
+        String profileProof;
+        int provenChatWindow = -1;
         Run(boolean zh, Flow callback) { this.zh = zh; this.callback = callback; }
         String l(String chinese, String english) { return zh ? chinese : english; }
         boolean alive() { return current == this; }
@@ -157,9 +171,37 @@ public final class PhoneService extends AccessibilityService {
             current = null;
             callback.done(text, ok);
         }
-        void fail(String text) { end(text, false); }
+        void handoff(String text) {
+            if (!alive()) return;
+            current = null;
+            callback.handoff(text);
+        }
+        void fail(String text) {
+            end(sendAttempted ? l("已尝试点发送，但无法核实结果。请在微信中查看与该联系人的聊天，先不要重发。",
+                    "I attempted Send but couldn't verify the result. Check the conversation in WeChat before sending anything again.") : text, false);
+        }
         void unavailable() { fail(l("屏幕已变化或标签不唯一。请回到目标页面，再说重试或取消。",
                 "The screen changed or the label was ambiguous. Return to the intended page and retry, or cancel.")); }
+        private void checkForeground() {
+            if (foregroundPackage == null && launchTarget == null) return;
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return; // A transition may briefly expose no root; the poll timeout still applies.
+            try {
+                String actual = PhoneTree.string(root.getPackageName());
+                if (foregroundPackage != null && !foregroundPackage.equals(actual)) { unavailable(); return; }
+                if (provenChatWindow >= 0 && provenChatWindow != root.getWindowId()) { unavailable(); return; }
+                if (launchTarget != null && !launchTarget.equals(actual) && !actual.equals(launchOrigin)) unavailable();
+            } finally { root.recycle(); }
+        }
+        private int narrationWindow() {
+            if (foregroundPackage == null) return -1;
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) return -2;
+            try {
+                if (!foregroundPackage.equals(PhoneTree.string(root.getPackageName()))) return -2;
+                return root.getWindowId();
+            } finally { root.recycle(); }
+        }
         boolean allowed(String tool) {
             if (!alive()) return false;
             if (locked()) {
@@ -172,9 +214,13 @@ public final class PhoneService extends AccessibilityService {
         }
         void say(String text, Runnable next) {
             if (!alive()) return;
+            final int startingWindow = narrationWindow();
+            if (startingWindow == -2) { unavailable(); return; }
             AtomicBoolean once = new AtomicBoolean();
             callback.step(text, () -> main.post(() -> {
-                if (alive() && once.compareAndSet(false, true)) next.run();
+                if (!alive() || !once.compareAndSet(false, true)) return;
+                if (startingWindow >= 0 && startingWindow != narrationWindow()) { unavailable(); return; }
+                next.run();
             }));
         }
         void waitScreen(String pkg, int window, ScreenTest test, ScreenUse use, String failure) {
@@ -191,9 +237,18 @@ public final class PhoneService extends AccessibilityService {
                 if (!name.isEmpty() && !name.equals(getPackageName()) && (pkg == null || pkg.equals(name))
                         && (window < 0 || window == root.getWindowId())) {
                     try (PhoneTree tree = new PhoneTree(root)) {
-                        if (test.matches(tree)) { use.accept(tree); return; }
+                        if (test.matches(tree)) {
+                            foregroundPackage = tree.pkg;
+                            launchTarget = null;
+                            launchOrigin = null;
+                            use.accept(tree);
+                            return;
+                        }
                     }
-                } else root.recycle();
+                } else {
+                    root.recycle();
+                    if (foregroundPackage != null && !foregroundPackage.equals(name)) { unavailable(); return; }
+                }
             }
             if (SystemClock.elapsedRealtime() >= deadline) { fail(failure); return; }
             main.postDelayed(() -> probe(pkg, window, test, use, failure, deadline), 260);
@@ -209,7 +264,13 @@ public final class PhoneService extends AccessibilityService {
         }
         void launch(String label, String pkg, Intent intent, Runnable next) {
             say(l("正在打开", "Opening ") + label, () -> {
-                if (!allowed("launch_app")) return;
+                if (!allowed("launch_app") || !allowed("read_nodes")) return;
+                launchTarget = pkg;
+                AccessibilityNodeInfo starting = getRootInActiveWindow();
+                if (starting != null) {
+                    launchOrigin = PhoneTree.string(starting.getPackageName());
+                    starting.recycle();
+                } else launchOrigin = getPackageName();
                 try { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
                 catch (RuntimeException e) {
                     fail(l("无法打开该应用。请确认它已安装并可启动，再说重试。", "I couldn't open the app. Check that it's installed and available, then retry."));
@@ -228,16 +289,49 @@ public final class PhoneService extends AccessibilityService {
         final int window = fresh ? entryWindow : -1;
         entryPackage = null;
         entryWindow = -1;
+        if (otp && expected == null) {
+            run.fail(run.l("请先打开含验证码的消息，再用悬浮按钮说读验证码。", "Open the message containing the code, then activate the floating button and say read the code."));
+            return;
+        }
         run.say(otp ? run.l("我将只朗读当前页面中明确标注的验证码。", "I'll read the clearly labelled code on this screen.") :
                 run.l("我来读刚才的屏幕。", "I'll read the previous screen."), () -> {
             if (!run.allowed(otp ? "read_code" : "read_nodes")) return;
+            run.launchOrigin = getPackageName();
+            run.launchTarget = expected;
             activity.moveTaskToBack(true);
             run.waitScreen(expected, window, t -> true, t -> {
                 String result = t.read(otp, zh);
                 boolean ok = !otp || result.startsWith(zh ? "验证码是 " : "The verification code is ");
-                run.end(result, ok);
+                List<Rect> bounds = otp ? java.util.Collections.emptyList() : t.unlabeledBounds();
+                if (bounds.isEmpty() || !run.callback.allow("read_icons")) run.end(result, ok);
+                else readWithIconHints(run, t.windowId(), bounds, result);
             }, run.l("没有找到刚才的页面。请回到要读的页面，用悬浮按钮再试。", "I couldn't find the previous screen. Return to it and try again from the floating button."));
         });
+    }
+    private void readWithIconHints(Run run, int window, List<Rect> bounds, String primary) {
+        // The normal text starts immediately. Only the supplementary description has a deadline.
+        class Readout {
+            boolean spoken, resolved;
+            String hints = "";
+            void finish() {
+                if (!run.alive() || !spoken || !resolved) return;
+                if (run.narrationWindow() != window) { run.unavailable(); return; }
+                current = null;
+                run.callback.readDone(hints.isEmpty() ? run.l("读屏结束。", "Finished reading.") : hints,
+                        hints.isEmpty() ? primary : primary + " " + hints);
+            }
+            void resolve(String result) {
+                if (resolved || !run.alive()) return;
+                resolved = true;
+                hints = result == null ? "" : result;
+                finish();
+            }
+        }
+        Readout result = new Readout();
+        run.say(primary, () -> { result.spoken = true; result.finish(); });
+        main.postDelayed(() -> result.resolve(""), 2000);
+        if (run.alive() && run.narrationWindow() == window)
+            IconHints.describe(this, window, bounds, run.zh, result::resolve);
     }
     private static String clean(String input) { return input == null ? "" : input.trim(); }
     private Intent launcher(Run run, String name) {
@@ -370,8 +464,15 @@ public final class PhoneService extends AccessibilityService {
     }
     private void enterChat(Run run, String name, String draft, boolean voice, boolean preset) {
         run.say(run.l("已找到联系人，正在打开与", "Found the contact. Opening the chat with ") + name +
-            run.l("的聊天。", "."), () -> run.act(WECHAT, "open_chat", t -> profile(t, name), t -> t.click(MESSAGE),
-                () -> run.waitScreen(WECHAT, -1, t -> chat(t, name), t -> prepare(run, name, draft, voice, preset),
+            run.l("的聊天。", "."), () -> run.act(WECHAT, "open_chat", t -> profile(t, name), t -> {
+                String id = getSharedPreferences("voice_trail", MODE_PRIVATE).getString("presetId", "");
+                run.profileProof = preset && !voice && t.profileIdMatches(id) ? id : null;
+                return t.click(MESSAGE);
+            },
+                () -> run.waitScreen(WECHAT, -1, t -> chat(t, name), t -> {
+                    if (run.profileProof != null) run.provenChatWindow = t.windowId();
+                    prepare(run, name, draft, voice, preset);
+                },
                     run.l("无法确认聊天对象。请打开正确的聊天后重试。", "I couldn't verify the conversation. Open the correct chat and retry."))));
     }
     private void prepare(Run run, String name, String draft, boolean voice, boolean preset) {
@@ -396,13 +497,41 @@ public final class PhoneService extends AccessibilityService {
     private void writeDraft(Run run, String name, String draft, boolean preset) {
         run.say(run.l("正在准备文字草稿。", "Preparing the text draft."), () -> run.act(WECHAT, "prepare_text",
             t -> chat(t, name), t -> t.draftMatches(draft) || t.writeEmptyDraft(draft),
-            () -> run.waitScreen(WECHAT, -1, t -> chat(t, name) && t.draftMatches(draft), t -> run.end(
-                (preset ? "" : run.l("此人不是预设联系人。", "This is not a preset contact. ")) +
-                run.l("已核对草稿，尚未发送。请听清收件人，用微信的发送按钮亲自确认。", "The draft is ready and unsent. Check the recipient, then activate Send yourself in WeChat."), true),
+            () -> run.waitScreen(WECHAT, -1, t -> chat(t, name) && t.draftMatches(draft), t -> {
+                if (preset) verifyAndSend(run, name, draft);
+                else run.handoff(run.l("此人不是预设联系人。已核对草稿，尚未发送。请听清收件人，用微信的发送按钮亲自确认。",
+                    "This is not a preset contact. The draft is ready and unsent. Check the recipient, then activate Send yourself in WeChat."));
+            },
                 run.l("无法核实草稿。请亲自检查微信输入框。", "I couldn't verify the draft. Please check the message box in WeChat."))));
     }
+    private void verifyAndSend(Run run, String name, String draft) {
+        run.say(run.l("已核对草稿。正在检查聊天对象和发送按钮。", "The draft matches. Checking the recipient and Send button."), () -> {
+            String manual = run.l("我没有点发送。请用微信核实收件人和草稿，亲自决定是否发送。",
+                    "I haven't pressed Send. Check the recipient and draft in WeChat and decide whether to send it yourself.");
+            if (!run.allowed("read_nodes")) return;
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) { run.handoff(manual); return; }
+            int previous;
+            try (PhoneTree t = new PhoneTree(root)) {
+                android.content.SharedPreferences trusted = getSharedPreferences("voice_trail", MODE_PRIVATE);
+                if (!WECHAT.equals(t.pkg) || !name.equals(trusted.getString("preset", "")) || run.profileProof == null ||
+                        !run.profileProof.equals(trusted.getString("presetId", "")) || run.provenChatWindow != t.windowId() ||
+                        !chat(t, name) || !t.draftMatches(draft)) { run.handoff(manual); return; }
+                PhoneTree.Item send = t.sendButton();
+                previous = t.conversationCopies(draft);
+                if (send == null || previous < 0 || run.sendAttempted) { run.handoff(manual); return; }
+                if (!run.allowed("send_preset_text")) return;
+                // Consume once, before making the Android call. A timeout is never retried.
+                run.sendAttempted = true;
+                try { send.node.performAction(AccessibilityNodeInfo.ACTION_CLICK); }
+                catch (RuntimeException e) { run.fail(""); return; }
+            }
+            run.waitScreen(WECHAT, -1, t -> chat(t, name) && t.editorCleared() && t.conversationCopies(draft) > previous,
+                    t -> run.end(run.l("微信聊天里出现了这条新消息，输入框也已清空。", "The new message appeared in the WeChat conversation and the input field cleared."), true), "");
+        });
+    }
     private void voiceHandoff(Run run, boolean preset) {
-        run.end((preset ? "" : run.l("此人不是预设联系人。", "This is not a preset contact. ")) +
-            run.l("已找到按住说话。请亲自录音，松开会发送。使用 TalkBack 时，聚焦按住说话，双击并按住，听到录音提示后说话。", "Hold to Talk is ready. Record yourself. Releasing may send the recording. With TalkBack, focus Hold to Talk, double-tap and hold, then speak after the recording cue."), true);
+        run.handoff((preset ? "" : run.l("此人不是预设联系人。", "This is not a preset contact. ")) +
+            run.l("已找到按住说话。请亲自录音，松开会发送。使用 TalkBack 时，聚焦按住说话，双击并按住，听到录音提示后说话。", "Hold to Talk is ready. Record yourself. Releasing may send the recording. With TalkBack, focus Hold to Talk, double-tap and hold, then speak after the recording cue."));
     }
 }

@@ -53,6 +53,13 @@ final class VisionEvidence {
         if (privateDocument) return privateNotice();
         if (lines.isEmpty()) return tr("没有读清文字。请靠近、保持平稳再拍，或问我画面里有什么。",
                 "I couldn't read any text. Move closer, hold still and retake, or ask what's in the picture.");
+        for (String value : lines) {
+            if (EXPIRY.matcher(value).find()) return expiry(LocalDate.now());
+        }
+        for (String value : lines) {
+            if (TOTAL.matcher(value).find()) return matches(TOTAL, tr("金额合计", "a total"));
+        }
+        page = 1;
         return tr("读到 " + lines.size() + " 行。", "I found " + lines.size() + " lines. ")
                 + numbered(0) + tr("。可问有效期、总额或下一行。", ". Ask for an expiry date, a total or more lines.");
     }
@@ -66,16 +73,19 @@ final class VisionEvidence {
         if (contains(q, "生产", "制造", "包装日期", "manufactur", "produced", "production", "packed")) {
             return matches(PRODUCTION, tr("生产日期", "a production date"));
         }
-        if (contains(q, "账单", "总额", "合计", "应付", "金额", "total", "bill", "amount", "balance")) {
+        if (contains(q, "账单", "总额", "合计", "应付", "金额", "多少钱", "total", "bill", "amount", "balance")) {
             return matches(TOTAL, tr("金额合计", "a total"));
         }
         Matcher line = LINE.matcher(q);
         if (line.find()) {
             int index = lineNumber(line.group(1)) - 1;
-            if (index >= 0 && index < lines.size()) return numbered(index);
+            if (index >= 0 && index < lines.size()) {
+                page = index + 1;
+                return numbered(index);
+            }
             return tr("没有这一行。", "That line isn't in this photo.");
         }
-        if (contains(q, "next", "继续", "下", "more", "read", "text", "读", "文字", "数字", "number", "door", "button", "门牌", "按钮")) {
+        if (contains(q, "next", "继续", "下", "more", "continue", "read", "text", "读", "文字", "数字", "number", "door", "button", "门牌", "按钮")) {
             if (lines.isEmpty()) return summary();
             if (contains(q, "from the start", "重头", "从头", "从第一", "start over")) page = 0;
             if (page >= lines.size()) {

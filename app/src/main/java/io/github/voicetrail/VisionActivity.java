@@ -77,6 +77,13 @@ public final class VisionActivity extends ComponentActivity {
     private AlertDialog approval;
     private String cloudQuestion, cloudHost;
     private String progress;
+    private boolean unheard;
+    private final Runnable consentTimeout = () -> {
+        if (approval != null) {
+            cancelCloud();
+            say(tr("确认已超时，照片未发送。", "Approval timed out. The photo wasn't sent."));
+        }
+    };
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
             if (!foreground || progress == null || shuttingDown) return;
@@ -110,6 +117,12 @@ public final class VisionActivity extends ComponentActivity {
     private void buildScreen() {
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.WHITE);
+        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+            android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars()
+                    | android.view.WindowInsets.Type.displayCutout() | android.view.WindowInsets.Type.ime());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setFocusableInTouchMode(true);
@@ -510,6 +523,11 @@ public final class VisionActivity extends ComponentActivity {
         });
         approval = dialog;
         dialog.show();
+        android.os.Vibrator vibration = getSystemService(android.os.Vibrator.class);
+        if (vibration != null && vibration.hasVibrator()) {
+            vibration.vibrate(android.os.VibrationEffect.createOneShot(140, android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+        }
+        main.postDelayed(consentTimeout, 60000);
         for (int choice : new int[]{AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEUTRAL, AlertDialog.BUTTON_NEGATIVE}) {
             dialog.getButton(choice).setMinHeight(dp(52));
             dialog.getButton(choice).setTextSize(18);
@@ -523,7 +541,12 @@ public final class VisionActivity extends ComponentActivity {
             }
         });
         dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> checkApproval(explicit.getText().toString(), phrase));
-        say(notice);
+        say(notice, () -> {
+            if (foreground && approval == dialog
+                    && checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                voice.listen(reply -> checkApproval(reply, phrase), this::say);
+            }
+        });
     }
 
     private void checkApproval(String reply, String phrase) {
@@ -545,6 +568,7 @@ public final class VisionActivity extends ComponentActivity {
         }
         approval.dismiss();
         approval = null;
+        main.removeCallbacks(consentTimeout);
         cloudQuestion = cloudHost = null;
         Bitmap current = image;
         int token = ++answerVersion;
@@ -573,6 +597,9 @@ public final class VisionActivity extends ComponentActivity {
     }
 
     private void cancelCloud() {
+        main.removeCallbacks(consentTimeout);
+        ++answerVersion;
+        endProgress();
         CloudAssist.cancel();
         if (approval != null) {
             String id = getIntent().getStringExtra("session");
@@ -601,6 +628,7 @@ public final class VisionActivity extends ComponentActivity {
         if (shuttingDown) return;
         last = message;
         status.setText(message);
+        unheard = !foreground;
         if (foreground) voice.say(message, after);
     }
 
@@ -645,6 +673,7 @@ public final class VisionActivity extends ComponentActivity {
         super.onResume();
         foreground = true;
         if (autoCapture && shutter != null && !busy) say(last, this::captureIfPending);
+        else if (unheard) say(last);
     }
 
     @Override protected void onPause() {

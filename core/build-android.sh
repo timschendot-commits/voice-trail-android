@@ -10,7 +10,7 @@ case "$(uname -s)" in
 esac
 
 bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$host/bin"
-api="${ANDROID_MIN_API:-26}"
+api="${ANDROID_MIN_API:-31}"
 output="${VOICE_TRAIL_JNI_OUT:-../app/src/main/jniLibs}"
 if [[ ! -x "$bin/llvm-readelf" ]]; then
   echo "Android NDK toolchain not found at $bin" >&2

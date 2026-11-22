@@ -133,3 +133,29 @@ func TestInterruptedStepClosesLogAndInvalidatesApprovals(t *testing.T) {
 		})
 	}
 }
+
+func TestPresetTextNeedsItsOwnReviewAndOneFinalPermit(t *testing.T) {
+	r := New()
+	for _, kind := range []string{"wechat_text", "wechat_voice", "manual_handoff"} {
+		id := r.Start(kind)
+		if r.Dispatch(id, "review_preset_send") != Denied || r.Dispatch(id, "send_preset_text") != Denied {
+			t.Fatalf("send permit escaped into %s", kind)
+		}
+		r.Close(id)
+	}
+	id := r.Start("wechat_preset_text")
+	defer r.Close(id)
+	if r.Dispatch(id, "send_preset_text") != Denied || r.Dispatch(id, "review_preset_send") != Ask {
+		t.Fatal("the preset contact alone must never authorize transmission")
+	}
+	if !r.Event(id, "approved") || r.Dispatch(id, "review_preset_send") != Allowed {
+		t.Fatal("spoken review rejected")
+	}
+	if r.Dispatch(id, "send_preset_text") != Denied || r.Dispatch(id, "prepare_text") != Allowed {
+		t.Fatal("draft preparation must follow approval and precede sending")
+	}
+	if r.Dispatch(id, "send_preset_text") != Allowed || r.Dispatch(id, "send_preset_text") != Denied ||
+		r.Dispatch(id, "review_preset_send") != Denied || r.Dispatch(id, "send_message") != Handoff {
+		t.Fatal("the send permit must be spent once and only on the scoped capability")
+	}
+}

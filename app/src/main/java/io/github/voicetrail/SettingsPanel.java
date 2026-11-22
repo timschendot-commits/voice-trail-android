@@ -121,9 +121,47 @@ public final class SettingsPanel {
             review(a, name, false, false);
         });
         if (!saved.isEmpty()) {
+            String id = a.prefs.getString("presetId","");
+            a.label(page,id.isEmpty() ? a.t("如需代发文字，请先绑定此人的微信号。","To send trusted texts, first bind this contact’s WeChat ID.")
+                    : a.t("已绑定的微信号：","Bound WeChat ID: ")+id);
+            a.button(page,a.t("设置核对用的微信号","Set verification WeChat ID"),() -> trustedId(a,saved));
             a.button(page, a.t("移除常用联系人", "Remove saved contact"), () -> review(a, saved, false, true));
         }
         back(a, page);
+    }
+
+    private static void trustedId(MainActivity a,String name) {
+        LinearLayout p=a.page(a.t("核对微信号","Verify WeChat ID"));
+        TextView title=a.label(p,a.t("输入联系人 "+name+" 资料页中的微信号。","Enter the WeChat ID shown on the profile of "+name+"."));
+        EditText field=new EditText(a); field.setSingleLine(true); field.setTextSize(24);
+        field.setId(View.generateViewId()); title.setLabelFor(field.getId());
+        field.setMinHeight(Math.round(56*a.getResources().getDisplayMetrics().density));
+        field.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        field.setSaveEnabled(false); p.addView(field);
+        a.button(p,a.t("口述微信号","Dictate WeChat ID"),() -> a.dictate(value -> {
+            if(active(a,p)) field.setText(value.trim());
+        }));
+        a.button(p,a.t("听取并核对","Hear and review"),() -> {
+            String id=field.getText().toString().trim();
+            if(!id.matches("[A-Za-z][A-Za-z0-9_-]{5,31}")) {
+                field.setError(a.t("请核对资料页上的完整微信号。","Check the complete ID shown on the profile.")); return;
+            }
+            LinearLayout confirm=a.page(a.t("确认绑定","Confirm binding"));
+            String spelled=String.join(" ",id.split(""));
+            String prompt=a.t("联系人 "+name+"，微信号逐字是 ","Contact "+name+", WeChat ID spelled ")+spelled+
+                    a.t("。请说确认或取消。",". Say confirm or cancel.");
+            a.label(confirm,prompt);
+            Runnable listen=() -> a.dictate(phrase -> {
+                if(!active(a,confirm)) return;
+                boolean yes="approve".equals(Command.parse(phrase).kind) && name.equals(a.prefs.getString("preset",""));
+                if(yes) a.prefs.edit().putString("presetId",id).apply();
+                contact(a); a.say(yes?a.t("已绑定。","ID bound."):a.t("已取消。","Cancelled."),null);
+            });
+            a.button(confirm,a.t("用语音回答","Answer by voice"),listen);
+            a.button(confirm,a.t("取消","Cancel"),() -> contact(a));
+            a.say(prompt,listen);
+        });
+        a.button(p,a.t("返回","Back"),() -> contact(a));
     }
 
     private static void review(MainActivity a, String proposed, boolean fromSpeech, boolean remove) {

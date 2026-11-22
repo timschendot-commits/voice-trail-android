@@ -26,6 +26,9 @@ final class PhoneTree implements AutoCloseable {
             CODE_WORD, Pattern.CASE_INSENSITIVE);
     private static final Pattern OTP_LENGTH = Pattern.compile("(?<![0-9])[0-9]{4,8}(?![0-9])");
     private static final Pattern LONG_NUMBER = Pattern.compile("(?<![0-9])(?:[0-9][ -]?){12,19}(?![0-9])");
+    private static final Pattern PRIVATE_SCREEN = Pattern.compile(
+            "密码|密碼|支付|付款|银行|銀行|转账|轉賬|银行卡|隐私|password|passphrase|credit card|payment|transfer|banking|\\bpin\\b",
+            Pattern.CASE_INSENSITIVE);
 
     static final class Item {
         final AccessibilityNodeInfo node;
@@ -52,6 +55,7 @@ final class PhoneTree implements AutoCloseable {
     final List<Item> items = new ArrayList<>();
     private final List<AccessibilityNodeInfo> owned = new ArrayList<>();
     private boolean truncated;
+    private boolean privateScreen;
 
     PhoneTree(AccessibilityNodeInfo root) {
         pkg = string(root.getPackageName());
@@ -61,7 +65,10 @@ final class PhoneTree implements AutoCloseable {
         owned.add(node);
         if (level > 60 || owned.size() >= LIMIT) { truncated = true; return; }
         if (!pkg.equals(string(node.getPackageName()))) return;
-        if (secret(node)) return; // Password nodes and their entire subtree.
+        if (secret(node)) { privateScreen = true; return; } // Exclude the entire subtree.
+        String visibleText = string(node.getText()) + " " + string(node.getContentDescription());
+        if (node.isEditable() || CODE_CONTEXT.matcher(visibleText).find() || LONG_NUMBER.matcher(visibleText).find()
+                || PRIVATE_SCREEN.matcher(visibleText).find()) privateScreen = true;
         Item item = new Item(node, parent);
         if (node.isVisibleToUser()) items.add(item);
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -84,6 +91,50 @@ final class PhoneTree implements AutoCloseable {
                 variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD);
     }
     static String string(CharSequence text) { return text == null ? "" : text.toString().trim(); }
+    int windowId() { return owned.get(0).getWindowId(); }
+    List<Rect> unlabeledBounds() {
+        List<Rect> bounds = new ArrayList<>();
+        if (Build.VERSION.SDK_INT < 34 || privateScreen || truncated) return bounds;
+        for (Item item : items) {
+            AccessibilityNodeInfo n = item.node;
+            if (!n.isEnabled() || !n.isClickable() || n.getChildCount() != 0 || !string(n.getText()).isEmpty() ||
+                    !string(n.getContentDescription()).isEmpty() || !string(n.getHintText()).isEmpty()) continue;
+            AccessibilityNodeInfo labelled = n.getLabeledBy();
+            if (labelled != null) { labelled.recycle(); continue; }
+            if (item.parent != null && !string(item.parent.node.getContentDescription()).isEmpty()) continue;
+            Rect rect = new Rect();
+            n.getBoundsInWindow(rect);
+            int w = rect.width(), h = rect.height();
+            if (w < 12 || h < 12 || w > 360 || h > 360 || w > 3 * h || h > 3 * w) continue;
+            bounds.add(rect);
+            if (bounds.size() == 4) break;
+        }
+        return bounds;
+    }
+    private static final Pattern PROFILE_ID = Pattern.compile("^(?:微信号|微信號|WeChat ID)\\s*[:：]\\s*([a-zA-Z0-9_-]+)$",
+            Pattern.CASE_INSENSITIVE);
+    boolean profileIdMatches(String expected) {
+        if (truncated || expected == null || expected.isEmpty()) return false;
+        Set<String> values = new LinkedHashSet<>();
+        for (Item item : items) {
+            if (item.node.isEditable()) continue;
+            for (CharSequence field : new CharSequence[]{item.node.getText(), item.node.getContentDescription()}) {
+                Matcher m = PROFILE_ID.matcher(string(field));
+                if (m.matches()) values.add(m.group(1));
+            }
+            if (!item.matches("微信号", "微信號", "WeChat ID", "微信号：", "微信號：", "WeChat ID:") ||
+                    item.parent == null || item.parent.node.getChildCount() != 2) continue;
+            // Exactly two visible sibling leaves in the same labelled row. Never scan nearby rows for an ID.
+            if (item.node.getChildCount() != 0) continue;
+            for (Item child : items) {
+                if (child == item || child.parent != item.parent || child.node.isEditable() || child.node.getChildCount() != 0) continue;
+                String text = string(child.node.getText());
+                if (text.isEmpty()) text = string(child.node.getContentDescription());
+                if (text.matches("[a-zA-Z0-9_-]+")) values.add(text);
+            }
+        }
+        return values.size() == 1 && values.contains(expected);
+    }
     boolean has(String... names) {
         for (Item item : items) if (item.matches(names)) return true;
         return false;
@@ -136,14 +187,21 @@ final class PhoneTree implements AutoCloseable {
         if (owned.isEmpty()) return false;
         Rect root = new Rect();
         owned.get(0).getBoundsInScreen(root);
+        int candidates = 0;
         for (Item item : items) {
-            if (!item.matches(name)) continue;
+            if (!item.matches(name) || item.node.isEditable()) continue;
             Rect bounds = new Rect();
             item.node.getBoundsInScreen(bounds);
-            if (item.node.isHeading() || (bounds.centerY() >= root.top &&
-                    bounds.centerY() < root.top + root.height() / 6)) return true;
+            if (bounds.isEmpty() || bounds.centerY() < root.top || bounds.centerY() > root.top + root.height() / 7) continue;
+            String id = string(item.node.getViewIdResourceName()).toLowerCase(Locale.ROOT);
+            boolean inToolbar = false;
+            for (Item p = item.parent; p != null; p = p.parent) {
+                if (string(p.node.getClassName()).endsWith("Toolbar")) { inToolbar = true; break; }
+            }
+            boolean centred = Math.abs(bounds.centerX() - root.centerX()) <= root.width() / 8;
+            if (item.node.isHeading() || id.endsWith("title") || inToolbar || centred) candidates++;
         }
-        return false;
+        return candidates == 1;
     }
     private Item editor() {
         if (truncated) return null;
@@ -166,6 +224,41 @@ final class PhoneTree implements AutoCloseable {
         Bundle args = new Bundle();
         args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
         return e.node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+    }
+    /** Restrict a Send action to one enabled labelled button on the same row as the composer. */
+    Item sendButton() {
+        Item send = uniqueTarget("发送", "發送", "傳送", "Send");
+        Item edit = editor();
+        if (send == null || edit == null) return null;
+        String role = string(send.node.getClassName());
+        String id = string(send.node.getViewIdResourceName()).toLowerCase(Locale.ROOT);
+        if (!(role.endsWith("Button") || id.endsWith("/send") || id.endsWith("/send_button") || id.endsWith("/btn_send"))) return null;
+        Rect button = new Rect(), field = new Rect();
+        send.node.getBoundsInScreen(button);
+        edit.node.getBoundsInScreen(field);
+        if (button.isEmpty() || field.isEmpty() || button.bottom <= field.top || field.bottom <= button.top) return null;
+        return send;
+    }
+    int conversationCopies(String text) {
+        if (truncated || owned.isEmpty()) return -1;
+        Rect window = new Rect(), field = new Rect();
+        owned.get(0).getBoundsInScreen(window);
+        Item edit = editor();
+        if (edit == null) return -1;
+        edit.node.getBoundsInScreen(field);
+        int count = 0;
+        for (Item item : items) {
+            if (item.node.isEditable() || item.node.getChildCount() != 0 ||
+                    !text.contentEquals(string(item.node.getText()))) continue;
+            Rect bounds = new Rect();
+            item.node.getBoundsInScreen(bounds);
+            if (bounds.centerY() > window.top + window.height() / 7 && bounds.centerY() < field.top) count++;
+        }
+        return count;
+    }
+    boolean editorCleared() {
+        Item e = editor();
+        return e != null && (e.node.isShowingHintText() || string(e.node.getText()).isEmpty());
     }
     String read(boolean otp, boolean zh) {
         Set<String> labels = new LinkedHashSet<>();

@@ -12,11 +12,14 @@ public class CommandTest {
         expect("read_screen", "读一下当前屏幕", "Please read the screen.");
         expect("read_code", "把屏幕上的验证码念给我听", "Read the verification code");
         expect("vision", "看一看", "Take a look");
+        assertEquals("Look at the expiry date", Command.parse("Look at the expiry date").detail);
+        assertEquals("看看这瓶药的有效期", Command.parse("看看这瓶药的有效期").detail);
         expect("approve", "确认发送", "Confirm send");
         expect("cancel", "停止", "Cancel");
         expect("slower", "说慢一点", "Slow down");
         expect("faster", "说快一点", "Speak faster");
         expect("repeat", "再说一遍", "Say that again");
+        expect("retry", "重试", "Retry");
         expect("help", "帮助", "What can you do?");
         expect("unknown", "do not confirm", "don't send", "他让我说确认发送", "yes", "嗯");
     }
@@ -75,6 +78,19 @@ public class CommandTest {
             assertEquals(5, reminder.minute);
             assertEquals("call Ada", reminder.detail);
         }
+    }
+
+    @Test public void followUpCanOnlyFillAnEmptyKnownDraft() {
+        Command draft = Command.parse("给女儿发微信");
+        Command filled = draft.withMessage("到①号门了吗？");
+        assertEquals("wechat_text", filled.kind);
+        assertEquals("女儿", filled.target);
+        assertEquals("到①号门了吗？", filled.detail);
+        assertEquals("unknown", filled.withMessage("replacement").kind);
+        assertEquals("unknown", Command.parse("open WeChat").withMessage("Hi").kind);
+        assertEquals("manual_handoff", draft.withMessage("my code is 123456").kind);
+        assertEquals("manual_handoff", Command.parse("Text Ada on WeChat: my code is 123456").kind);
+        assertEquals("unknown", draft.withMessage("\nconfirm").kind);
     }
 
     @Test public void invalidAmbiguousOrUnsupportedTimesNeedClarification() {

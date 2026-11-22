@@ -27,11 +27,15 @@ const (
 // Tool policy is specific to the current goal. Operations with irreversible
 // effects are absent from the executable catalog and always go to the user.
 var catalog = map[string]map[string]int{
-	"read_screen":    {"read_nodes": Allowed},
+	"read_screen":    {"read_nodes": Allowed, "read_icons": Allowed},
 	"read_code":      {"read_nodes": Allowed, "read_code": Allowed},
 	"open_app":       {"read_nodes": Allowed, "launch_app": Allowed},
 	"find_feature":   {"read_nodes": Allowed, "launch_app": Allowed, "find_label": Allowed, "open_contacts": Allowed},
 	"wechat_text":    {"read_nodes": Allowed, "launch_app": Allowed, "find_label": Allowed, "open_contacts": Allowed, "open_chat": Allowed, "review_recipient": Ask, "prepare_text": Allowed},
+	"wechat_preset_text": {
+		"read_nodes": Allowed, "launch_app": Allowed, "find_label": Allowed, "open_contacts": Allowed,
+		"open_chat": Allowed, "prepare_text": Allowed, "review_preset_send": Ask, "send_preset_text": Allowed,
+	},
 	"wechat_voice":   {"read_nodes": Allowed, "launch_app": Allowed, "find_label": Allowed, "open_contacts": Allowed, "open_chat": Allowed, "review_recipient": Ask, "prepare_voice": Allowed},
 	"alarm":          {"open_alarm": Allowed},
 	"reminder":       {"open_reminder": Allowed},
@@ -55,14 +59,24 @@ type approvalRequest struct {
 	approved bool
 }
 
+type presetSendState uint8
+
+const (
+	sendUnreviewed presetSendState = iota
+	sendArmed
+	sendPrepared
+	sendConsumed
+)
+
 type task struct {
-	kind       string
-	log        *session.SessionLog
-	nextStep   uint64
-	callSeq    uint64
-	stepOpen   bool
-	terminal   bool
-	pending    *approvalRequest
+	kind     string
+	log      *session.SessionLog
+	nextStep uint64
+	callSeq  uint64
+	stepOpen bool
+	terminal bool
+	pending  *approvalRequest
+	send     presetSendState
 }
 
 // Registry serializes event, dispatch and close, including concurrent UI and
@@ -169,6 +183,9 @@ func (r *Registry) Event(id, event string) bool {
 		if t.pending != nil {
 			return !t.pending.approved
 		}
+		if t.callSeq >= 256 {
+			return false
+		}
 		t.callSeq++
 		return t.request("handoff_review")
 	case "approved":
@@ -235,8 +252,20 @@ func (r *Registry) Dispatch(id, name string) int {
 		return Handoff
 	}
 	policy, known := catalog[t.kind][name]
-	if !known || (t.pending != nil && t.pending.tool != name) || t.callSeq >= 256 {
+	if (t.pending != nil && t.pending.tool != name) || t.callSeq >= 256 {
 		return Denied
+	}
+	if !known {
+		// Exercise the real upstream PreDeny path without recording caller
+		// text (which might contain a phone number or an SMS code).
+		policy, name = Denied, "unsupported"
+	}
+	// All fields of the approved recipient and message stay in the Android
+	// task. There is one review per session. The Android executor must compare
+	// the live chat and composer to that immutable task before asking for send.
+	if name == "review_preset_send" && t.send != sendUnreviewed ||
+		name == "send_preset_text" && t.send != sendPrepared {
+		policy = Denied
 	}
 	t.callSeq++
 	callID := brand.NewToolCallID("call-" + strconv.FormatUint(t.callSeq, 10))
@@ -283,6 +312,18 @@ func (r *Registry) Dispatch(id, name string) int {
 	}
 	if ownStep && !t.endStep() {
 		return Denied
+	}
+	if status == Allowed && t.kind == "wechat_preset_text" {
+		switch name {
+		case "review_preset_send":
+			t.send = sendArmed
+		case "prepare_text":
+			if t.send == sendArmed {
+				t.send = sendPrepared
+			}
+		case "send_preset_text":
+			t.send = sendConsumed
+		}
 	}
 	return status
 }
