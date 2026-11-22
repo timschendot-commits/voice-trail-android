@@ -19,6 +19,12 @@ An Android assistant for blind, low-vision and older users. Speak a request, hea
 4. 微信请先用测试账号、可区分的联系人备注和无敏感内容的消息。相机用自制标签，比如 `EXP 2030-06-30` 和 `MFG 2026-01-01`。  
    Use two designated test accounts for messaging and a printed sample label for the camera. To leave the trial, disable Voice Trail in Android accessibility settings. The overlay disappears when its service stops.
 
+### 发布版模拟器实测 · Published APK device test
+
+Android 15（Pixel 5 模拟器，x86_64）从 Releases 下载安装了 `077bf18f8c56` 的 APK 并核对 SHA-256。安装离线朗读引擎后，在飞行模式下，跨应用读屏读出了系统“日期和时间”页面，虚拟相机画面被识别为房间。英文和中文标签分别读出 `2031-07-28` 和 `2032-06-18`，只有生产日期的样图得到“无法确定有效期”的提示。验证码输入请求触发手动接管。另一台模拟器在应用退到后台后收到提醒，首次观察到通知的时间比设定时刻晚 60 秒。本地提醒采用 Android 的非精确计时。模拟器缺少英文离线识别包，应用给出了恢复提示。真人语音、TalkBack 听感和真实微信收发仍待真机验证。
+
+On Android 15, the published APK passed the language-switch, cross-app screen reading, camera, bilingual label OCR, manual handoff and background reminder checks. The emulator also showed the recovery message for missing English offline speech recognition. Human speech, TalkBack navigation by ear and messaging between real WeChat accounts still need handset testing. [运行记录、日志与测试证据 · Device run and evidence](https://github.com/timschendot-commits/voice-trail-android/actions/runs/45015964837)
+
 ## 产品决定与依据 · Product decisions
 
 下表列出 Android 测试版的设计选择、实现位置和验收依据，涵盖中英双语交互、TalkBack 兼容性、语音确认和敏感操作。  
