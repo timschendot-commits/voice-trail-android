@@ -13,6 +13,12 @@ jobs:
   device:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [accessibility, reminder]
+    env:
+      QA_SUITE: ${{ matrix.suite }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify the public APK
@@ -47,7 +53,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: published-apk-device-evidence
+          name: published-apk-device-evidence-${{ matrix.suite }}
           path: evidence/
           retention-days: 30
           if-no-files-found: warn

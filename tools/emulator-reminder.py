@@ -13,8 +13,61 @@ from pathlib import Path
 ui = runpy.run_path(str(Path(__file__).with_name("emulator-smoke.py")))
 APP = ui["APP"]
 
+def device_time(d):
+    return datetime.strptime(d.adb("shell", "date", "+%Y%m%d%H%M%S%z"), "%Y%m%d%H%M%S%z")
 
-def run(d, report):
+
+def duration_seconds(raw):
+    if raw == "0":
+        return 0.0
+    units = {"d":86400, "h":3600, "m":60, "s":1, "ms":.001}
+    parts = re.findall(r"(\d+)(ms|d|h|m|s)", raw.lstrip("+-"))
+    if not parts or "".join(n + unit for n, unit in parts) != raw.lstrip("+-"):
+        return None
+    return (-1 if raw.startswith("-") else 1) * sum(int(n) * units[u] for n, u in parts)
+
+
+def alarm_snapshot(d):
+    lines = d.adb("shell", "dumpsys", "alarm").splitlines()
+    result = {"device_time": device_time(d).isoformat(), "pending": [], "app_history": []}
+    for i, line in enumerate(lines):
+        if APP not in line:
+            continue
+        # Android Alarm.dump() prints the package in an alarm header or tag,
+        # followed by origWhen, policyWhenElapsed, whenElapsed and maxWhenElapsed.
+        result["app_history"].append(line.strip()[:320])
+        nearby = lines[i + 1:i + 10]
+        start = next((j for j, s in enumerate(nearby[:4]) if " origWhen=" in s), None)
+        if start is None:
+            continue
+        fields = []
+        for s in nearby[start:]:
+            if not s.strip().startswith(("type=", "policyWhenElapsed:", "whenElapsed=", "operation=")):
+                break
+            fields.append(s.strip())
+        if fields and fields not in result["pending"]:
+            result["pending"].append(fields)
+    result["app_history"] = result["app_history"][:20]
+    return result
+
+
+def record_values(d, key):
+    record = d.adb("shell", "cmd", "notification", "get", shlex.quote(key))
+    primary = record.split("publicNotification=", 1)[0]
+    def extra(name):
+        m = re.search(r"(?m)^\s*android\." + name + r"=\w+ \((.*)\)\s*$", primary)
+        return m[1] if m else None
+    channel = re.search(r"effectiveNotificationChannel=NotificationChannel\{mId='([^']+)'", record)
+    if not channel:
+        channel = re.search(r"\bchannel(?:Id)?=['\"]?([\w.-]+)", primary)
+    return {"key": key, "title": extra("title"), "body": extra("text"),
+            "channel": channel[1] if channel else None,
+            "fields": [s.strip()[:450] for s in record.splitlines() if
+                       "android.title=" in s or "android.text=" in s or
+                       "effectiveNotificationChannel=" in s or s.startswith("NotificationRecord(")][:8]}
+
+
+def run(d, report, max_wait):
     if not re.fullmatch(r"emulator-\d+", d.serial) or not any(
             d.adb("shell", "getprop", key) == "1" for key in ("ro.kernel.qemu", "ro.boot.qemu")):
         raise RuntimeError("A disposable Android emulator is required")
@@ -33,7 +86,7 @@ def run(d, report):
     d.tap_node(editor(tree))
     # Use the emulator's clock including its UTC offset. Leave a minimum of
     # 60 seconds for the normal read-back before Android receives the alarm.
-    now = datetime.strptime(d.adb("shell", "date", "+%Y%m%d%H%M%S%z"), "%Y%m%d%H%M%S%z")
+    now = device_time(d)
     due = now.replace(second=0, microsecond=0) + timedelta(minutes=2)
     label = "check the emulator timer"
     clock = due.strftime("%I:%M %p").lower()
@@ -51,23 +104,53 @@ def run(d, report):
         raise RuntimeError(report["screen_result"])
     d.evidence("reminder-scheduled")
     d.adb("shell", "input", "keyevent", "KEYCODE_HOME")
-    until = time.monotonic() + 185
+    start = time.monotonic()
+    initial = alarm_snapshot(d)
+    report["alarm_snapshots"] = [initial]
+    report["own_notifications"] = {}
+    remaining = (due - device_time(d)).total_seconds()
+    # Respect Android's actual inexact delivery window, plus a small allowance;
+    # if Android does not expose it, use the supplied ceiling.
+    latest = [duration_seconds(m[1]) for block in initial["pending"] for s in block
+              if (m := re.search(r"\bmaxWhenElapsed=(\S+)", s))]
+    known = [v for v in latest if v is not None and v >= 0]
+    budget = min(max_wait, max(remaining, *known) + 75) if known else max_wait
+    report["wait_budget_seconds"] = round(budget, 2)
+    print("ALARM_WINDOW " + json.dumps(initial), flush=True)
+    until = start + budget
+    next_observation = start
     while time.monotonic() < until:
-        new = set(d.adb("shell", "cmd", "notification", "list").splitlines()) - before
-        for key in new:
+        keys = [k for k in d.adb("shell", "cmd", "notification", "list").splitlines() if f"|{APP}|" in k]
+        for key in keys:
+            if key in before and f"|{APP}|1|" in key:
+                continue
+            if key not in report["own_notifications"]:
+                entry = record_values(d, key)
+                report["own_notifications"][key] = entry
+                print("OWN_NOTIFICATION " + json.dumps(entry), flush=True)
+            entry = report["own_notifications"][key]
             if f"|{APP}|1|voicetrail://reminder/" not in key:
                 continue
-            record = d.adb("shell", "cmd", "notification", "get", shlex.quote(key))
-            if "Voice Trail reminder" not in record or label not in record or "channel=reminders" not in record:
+            if (entry["title"], entry["body"], entry["channel"]) != ("Voice Trail reminder", label, "reminders"):
+                # Re-read if NotificationManager has only just posted a partial record.
+                report["own_notifications"][key] = record_values(d, key)
                 continue
-            observed = datetime.strptime(d.adb("shell", "date", "+%Y%m%d%H%M%S%z"), "%Y%m%d%H%M%S%z")
+            observed = device_time(d)
             delay = int((observed - due).total_seconds())
             if delay < 0:
                 raise RuntimeError("OS notification observed before scheduled minute")
             report.update(notification_id=1, channel="reminders", title="Voice Trail reminder",
                           body=label, observed_at=observed.isoformat(), first_observed_after_due_seconds=delay)
+            report["alarm_snapshots"].append(alarm_snapshot(d))
             return
-        time.sleep(1.25)
+        if time.monotonic() >= next_observation:
+            snapshot = alarm_snapshot(d)
+            report["alarm_snapshots"].append(snapshot)
+            print("ALARM_POLL " + json.dumps(snapshot), flush=True)
+            next_observation = time.monotonic() + 60
+        time.sleep(2)
+    report["alarm_snapshots"].append(alarm_snapshot(d))
+    report["end_device_time"] = device_time(d).isoformat()
     raise RuntimeError("The real reminder notification was not observed within the bounded test interval")
 
 
@@ -75,11 +158,13 @@ def main():
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument("--out", type=Path, required=True)
     args.add_argument("--serial", default="emulator-5554")
+    args.add_argument("--max-wait", type=int, default=900,
+                      help="Hard ceiling in seconds after scheduling, default 15 minutes")
     options = args.parse_args()
     d = ui["Device"](options.serial, options.out)
     report = {"case": "local reminder delivery while launcher is foreground"}
     try:
-        run(d, report)
+        run(d, report, options.max_wait)
         report["status"] = "passed"
     except Exception as exc:
         report.update(status="failed", reason=str(exc)[:500], evidence=d.diagnostics())

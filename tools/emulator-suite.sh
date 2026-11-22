@@ -40,16 +40,24 @@ run_case() {
   echo "::endgroup::"
 }
 
-run_case stock /usr/bin/python3 tools/emulator-smoke.py --out "$out/stock" --apk release/VoiceTrail-debug.apk
+suite=${QA_SUITE:-accessibility}
+case "$suite" in
+  accessibility) run_case stock /usr/bin/python3 tools/emulator-smoke.py --out "$out/stock" --apk release/VoiceTrail-debug.apk ;;
+  reminder) adb install -r release/VoiceTrail-debug.apk ;;
+  *) echo "Unknown device suite: $suite" >&2; exit 2 ;;
+esac
 if bash tools/emulator-voice.sh 2>&1 | tee "$out/voice-setup.txt"; then
   adb shell cmd connectivity airplane-mode enable
   adb shell svc wifi disable
   adb shell svc data disable
   adb shell settings get global airplane_mode_on > "$out/airplane-mode.txt"
-  run_case offline-ui /usr/bin/python3 tools/emulator-smoke.py --out "$out/offline" --require-camera --exercise-voice
-  run_case screen-read /usr/bin/python3 tools/emulator-read.py --out "$out/read"
-  run_case visual-ocr /usr/bin/python3 tools/emulator-vision.py --out "$out/vision"
-  run_case reminder /usr/bin/python3 tools/emulator-reminder.py --out "$out/reminder"
+  if [[ "$suite" == reminder ]]; then
+    run_case reminder /usr/bin/python3 tools/emulator-reminder.py --out "$out/reminder"
+  else
+    run_case offline-ui /usr/bin/python3 tools/emulator-smoke.py --out "$out/offline" --require-camera --exercise-voice
+    run_case screen-read /usr/bin/python3 tools/emulator-read.py --out "$out/read"
+    run_case visual-ocr /usr/bin/python3 tools/emulator-vision.py --out "$out/vision"
+  fi
 else
   echo 'Offline TTS setup failed' | tee -a "$out/status.txt"
   failed=1
