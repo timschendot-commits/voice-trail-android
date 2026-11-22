@@ -196,7 +196,7 @@ public final class IconHints {
                             break;
                         case 1: d=Math.min(line(a,b,-1,-1,1,1),line(a,b,-1,1,1,-1)); break;
                         case 2: d=Math.min(Math.abs(Math.hypot(a+.26,b+.26)-.73),line(a,b,.26,.26,1,1)); break;
-                        default: d=Math.min(line(a,b,0,-1,0,1),line(a,b,-1,0,1,0));
+                        default: d=Math.min(line(a,b,0,-1,0,1),line(a,b,-1,0,1,0)); break;
                     }
                     mask[y*N+x]=d<=radius/scale;
                 }

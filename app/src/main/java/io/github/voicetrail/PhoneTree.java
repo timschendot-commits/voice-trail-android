@@ -66,9 +66,6 @@ final class PhoneTree implements AutoCloseable {
         if (level > 60 || owned.size() >= LIMIT) { truncated = true; return; }
         if (!pkg.equals(string(node.getPackageName()))) return;
         if (secret(node)) { privateScreen = true; return; } // Exclude the entire subtree.
-        String visibleText = string(node.getText()) + " " + string(node.getContentDescription());
-        if (node.isEditable() || CODE_CONTEXT.matcher(visibleText).find() || LONG_NUMBER.matcher(visibleText).find()
-                || PRIVATE_SCREEN.matcher(visibleText).find()) privateScreen = true;
         Item item = new Item(node, parent);
         if (node.isVisibleToUser()) items.add(item);
         for (int i = 0; i < node.getChildCount(); i++) {
@@ -95,6 +92,12 @@ final class PhoneTree implements AutoCloseable {
     List<Rect> unlabeledBounds() {
         List<Rect> bounds = new ArrayList<>();
         if (Build.VERSION.SDK_INT < 34 || privateScreen || truncated) return bounds;
+        for (Item item : items) {
+            AccessibilityNodeInfo n = item.node;
+            String visible = string(n.getText()) + " " + string(n.getContentDescription());
+            if (n.isEditable() || CODE_CONTEXT.matcher(visible).find() || LONG_NUMBER.matcher(visible).find()
+                    || PRIVATE_SCREEN.matcher(visible).find()) return bounds;
+        }
         for (Item item : items) {
             AccessibilityNodeInfo n = item.node;
             if (!n.isEnabled() || !n.isClickable() || n.getChildCount() != 0 || !string(n.getText()).isEmpty() ||

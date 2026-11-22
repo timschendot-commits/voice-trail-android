@@ -70,7 +70,7 @@ public final class MainActivity extends Activity {
             else if ("retry".equals(i.getAction()) && id.equals(resultId) && active == null && retry != null) start(retry);
             else if ("details".equals(i.getAction())) {
                 home();
-                say(id.equals(session) ? currentSummary() : id.equals(resultId) ? resultSummary :
+                say(id.equals(session) ? currentSummary() : id.equals(resultId) ? (repeatable.isEmpty()?resultSummary:repeatable) :
                         t("这条任务记录已结束。","This task record has ended."),null);
             }
         } else if (i.getBooleanExtra("listen",false)) {
@@ -179,6 +179,7 @@ public final class MainActivity extends Activity {
         });
     }
     private void beginListening() {
+        if (stopUnverifiedSend()) return;
         if (consent==null && active!=null) clearActive("cancel");
         voice.stop();
         if (consent!=null) dictate(this::answerConsent);
@@ -245,6 +246,7 @@ public final class MainActivity extends Activity {
         say(repeatable.isEmpty()?t("还没有可重复的结果。","There is no result to repeat yet."):repeatable,null);
     }
     private boolean begin(String kind) {
+        if (stopUnverifiedSend()) return false;
         clearActive("cancel"); voice.stop(); resultId=""; retry=null;
         try { session=NativeCore.start(kind); }
         catch(LinkageError e) { session=""; }
@@ -428,6 +430,11 @@ public final class MainActivity extends Activity {
         if(PhoneService.get()!=null && PhoneService.get().hasUnverifiedSend())
             msg=t("已停止核对。发送按钮可能已被按下，请先检查微信对话，避免重复发送。","Verification stopped after a possible send. Check the chat before sending again.");
         clearActive("cancel"); voice.stop(); TaskAlerts.clear(this); say(msg,null);
+    }
+    private boolean stopUnverifiedSend() {
+        if(PhoneService.get()==null || !PhoneService.get().hasUnverifiedSend()) return false;
+        cancelWith("");
+        return true;
     }
     @Override protected void onActivityResult(int request,int result,Intent data) {
         super.onActivityResult(request,result,data);

@@ -28,7 +28,7 @@ for abi in arm64-v8a x86_64; do
   mkdir -p "$directory"
   so="$directory/libvoicetrail.so"
   GOOS=android GOARCH="$arch" CGO_ENABLED=1 CC="$bin/$target$api-clang" \
-    go build -mod=mod -trimpath -buildvcs=false -buildmode=c-shared \
+    go build -mod=readonly -trimpath -buildvcs=false -buildmode=c-shared \
     -ldflags='-s -w -extldflags=-Wl,-z,max-page-size=16384' -o "$so" ./cmd/androidjni
   symbols="$("$bin/llvm-readelf" --dyn-syms --wide "$so")"
   for name in start event dispatch close; do

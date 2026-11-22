@@ -316,6 +316,7 @@ public final class PhoneService extends AccessibilityService {
             void finish() {
                 if (!run.alive() || !spoken || !resolved) return;
                 if (run.narrationWindow() != window) { run.unavailable(); return; }
+                if (!hints.isEmpty() && !sameIconTargets(window, bounds)) hints = "";
                 current = null;
                 run.callback.readDone(hints.isEmpty() ? run.l("读屏结束。", "Finished reading.") : hints,
                         hints.isEmpty() ? primary : primary + " " + hints);
@@ -330,8 +331,15 @@ public final class PhoneService extends AccessibilityService {
         Readout result = new Readout();
         run.say(primary, () -> { result.spoken = true; result.finish(); });
         main.postDelayed(() -> result.resolve(""), 2000);
-        if (run.alive() && run.narrationWindow() == window)
+        if (run.alive() && run.narrationWindow() == window && sameIconTargets(window, bounds))
             IconHints.describe(this, window, bounds, run.zh, result::resolve);
+    }
+    private boolean sameIconTargets(int window, List<Rect> targets) {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return false;
+        try (PhoneTree t = new PhoneTree(root)) {
+            return t.windowId() == window && !getPackageName().equals(t.pkg) && targets.equals(t.unlabeledBounds());
+        }
     }
     private static String clean(String input) { return input == null ? "" : input.trim(); }
     private Intent launcher(Run run, String name) {

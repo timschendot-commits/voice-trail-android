@@ -34,8 +34,8 @@ jobs:
         run: |
           go mod download github.com/JopenChen/dsh-go
           go mod verify
-          go test -mod=mod -race ./...
-          cat go.sum
+          go test -mod=readonly -race ./...
+          git diff --exit-code -- go.mod go.sum
       - name: Cross-compile the embedded Go libraries
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
@@ -71,7 +71,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: bash ./gradlew --no-daemon :app:connectedDebugAndroidTest
+          script: bash ./gradlew --no-daemon -Pandroid.testInstrumentationRunnerArguments.ciOverlayTest=true :app:connectedDebugAndroidTest
       - name: Save device reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -114,14 +114,23 @@ jobs:
           release_tag="preview-${SOURCE_COMMIT:0:12}"
           if [[ "$SOURCE_TYPE" == "tag" ]]; then
             release_tag="$SOURCE_NAME"
-          fi
-          if gh release view "$release_tag" --json assets --jq '.assets[].name' > existing-assets; then
-            if grep -Fxq VoiceTrail-debug.apk existing-assets && grep -Fxq SHA256SUMS existing-assets; then
+          else
+            current_head=$(gh api --method GET "repos/$GH_REPO/commits" -f sha="$SOURCE_NAME" -F per_page=1 --jq '.[0].sha')
+            if [[ "$current_head" != "$SOURCE_COMMIT" ]]; then
+              echo "::notice::A newer commit is on $SOURCE_NAME. Download this build's VoiceTrail-Android-test artifact at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID#artifacts"
               exit 0
             fi
-            gh release upload "$release_tag" dist/VoiceTrail-debug.apk dist/SHA256SUMS --clobber
+          fi
+          if gh release view "$release_tag" --json assets --jq '.assets[] | select(.size > 0) | .name' > existing-assets; then
+            if ! grep -Fxq VoiceTrail-debug.apk existing-assets || ! grep -Fxq SHA256SUMS existing-assets; then
+              gh release upload "$release_tag" dist/VoiceTrail-debug.apk dist/SHA256SUMS --clobber
+            fi
           else
             gh release create "$release_tag" dist/VoiceTrail-debug.apk dist/SHA256SUMS \
               --target "$SOURCE_COMMIT" --prerelease --title "VoiceTrail $release_tag" \
               --notes "Android 12+ 测试包 / Test build. Download VoiceTrail-debug.apk. Fresh CI builds use a temporary debug signing key. If Android rejects an update, uninstall the previous preview first. Uninstalling clears local settings."
           fi
+          gh release view "$release_tag" --json assets,url > published.json
+          jq -e 'any(.assets[]; .name == "VoiceTrail-debug.apk" and .size > 0)
+            and any(.assets[]; .name == "SHA256SUMS" and .size > 0)' published.json > /dev/null
+          jq -r '.url, (.assets[] | "\(.name)  \(.size) bytes")' published.json
