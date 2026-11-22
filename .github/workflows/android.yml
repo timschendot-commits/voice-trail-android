@@ -23,6 +23,10 @@ jobs:
           go-version: '1.26.x'
           cache-dependency-path: core/go.mod
       - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+          log-accepted-android-sdk-licenses: 'false'
       - name: Install Android SDK and NDK
         run: sdkmanager "platforms;android-35" "build-tools;34.0.0" "ndk;28.2.13676358"
       - name: Run Go core tests
