@@ -8,7 +8,7 @@ An Android assistant for blind, low-vision and older users. Speak a request, hea
 
 [下载页 · Releases](https://github.com/timschendot-commits/voice-trail-android/releases) · [构建与测试记录 · Actions](https://github.com/timschendot-commits/voice-trail-android/actions/workflows/android.yml) · [报告问题 · Issues](https://github.com/timschendot-commits/voice-trail-android/issues)
 
-## 给测试朋友 · Install and try
+## 测试 · Install and try
 
 1. 在 Releases 找到与你要测试的提交对应的预发布版本，下载 `VoiceTrail-debug.apk`，可用同页 `SHA256SUMS` 核对。支持 Android 12（API 31）及以上、64 位 ARM 手机和 x86_64 模拟器。GitHub Actions 会在构建、单元测试、模拟器测试均成功后发布 APK。若某个提交尚无安装包，先看对应的工作流。  
    Choose a prerelease for the commit you want to test. Install **VoiceTrail-debug.apk** from its assets. Each fresh CI build can have a different debug signature. If Android rejects an update, removing the old preview clears its saved settings. A local build using the same debug key can usually update in place.
