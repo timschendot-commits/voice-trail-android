@@ -17,12 +17,12 @@ An Android assistant for blind, low-vision and older users. Speak a request, hea
 3. 首页的“启用读屏服务”会先说明用途，再打开系统无障碍设置，由本人启用。麦克风、相机和通知分别按需授权。系统版本或厂商策略阻止侧载应用开启无障碍时，记录系统原话和版本。  
    Use **Enable screen access** on Home, review the Android disclosure, and enable the service yourself. For the basic read test, return to a labelled app before activating the floating button. For a notification test, enable notifications under **More → Permissions and privacy**. [Android 关于受限设置的说明](https://support.google.com/android/answer/12623953)
 4. 微信请先用测试账号、可区分的联系人备注和无敏感内容的消息。相机用自制标签，比如 `EXP 2030-06-30` 和 `MFG 2026-01-01`。  
-   Use a test conversation with a consenting friend and a printed sample label. To leave the trial, disable Voice Trail in Android accessibility settings. The overlay disappears when its service stops.
+   Use two designated test accounts for messaging and a printed sample label for the camera. To leave the trial, disable Voice Trail in Android accessibility settings. The overlay disappears when its service stops.
 
 ## 产品决定与依据 · Product decisions
 
-需求确定了 Android、中英双语、与 TalkBack 共存、语音确认和敏感操作由用户掌控。以下是开发者为首个测试版代选的具体做法。朋友可以按文件位置修改，并复跑对应的验收项。  
-The product brief establishes the users and boundaries. The choices below are implementation defaults made for this preview.
+下表列出 Android 测试版的设计选择、实现位置和验收依据，涵盖中英双语交互、TalkBack 兼容性、语音确认和敏感操作。  
+The table documents the Android preview’s design decisions, their rationale and the relevant source files.
 
 | 决定 · Choice | 原因、行为和修改入口 · Rationale and implementation |
 | --- | --- |
@@ -41,7 +41,7 @@ The product brief establishes the users and boundaries. The choices below are im
 ## 模块验收 · Acceptance on a handset
 
 这是验收脚本。每一行先听正向结果，再尝试右侧的失败情况。自动化执行结果以对应提交的 [Actions 记录](https://github.com/timschendot-commits/voice-trail-android/actions/workflows/android.yml) 为准。真机 TalkBack、微信、厂商语音引擎和延迟要记录设备实测结果。  
-Run each row in both languages with a consenting tester. A passing emulator job verifies the assertions it ran. Keep the handset results separate.
+Run each scenario in both supported languages using dedicated test accounts. A passing emulator job verifies the assertions it ran. Keep the handset results separate.
 
 | 模块 · Setup | 中英示例 · Say or do | 应观察到的结果和反例 · Pass and failure checks |
 | --- | --- | --- |
@@ -99,7 +99,7 @@ bash ./gradlew :app:connectedDebugAndroidTest
 
 跨应用读屏验收另设模拟器开关。用一次性模拟器运行 `bash ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.ciOverlayTest=true`。测试从安卓设置点击真正的悬浮按钮，再通过 Go 内核和无障碍服务读取原窗口，并核对返回的包名与窗口编号。测试用回调接收朗读文本，麦克风识别和扬声器反馈仍需真人验证。此项只在明确启用的模拟器上临时开启服务，并在退出测试时恢复原设置。
 
-朋友可以在 GitHub 点 **Fork**，克隆自己的副本，用独立分支修改相应模块，再开 Pull Request。无需原仓库写入权限。Actions 中可查看 Go 测试、Android JVM 单测、APK 权限/ABI 检查，以及 API 35 模拟器上的 JNI 和读屏节点测试。检查对应提交和各步骤，下载 `android-test-reports` 阅读详情。  
+提交改动时，在 GitHub 上 **Fork** 仓库，克隆副本，在独立分支修改相应模块，然后发起 Pull Request。无需原仓库写入权限。Actions 中可查看 Go 测试、Android JVM 单测、APK 权限/ABI 检查，以及 API 35 模拟器上的 JNI 和读屏节点测试。检查对应提交和各步骤，下载 `android-test-reports` 阅读详情。  
 Fork, branch, change one workflow, run the relevant tests, then open a PR. In the description include the commit/APK version, handset and language, exact synthetic command, expected speech, actual speech, and whether an unintended action occurred. Mark untested cases explicitly. [Workflow definition](.github/workflows/android.yml) · [JUnit tests](app/src/test/java/io/github/voicetrail) · [Device tests](app/src/androidTest/java/io/github/voicetrail)
 
 原创代码采用 [MIT 许可证](LICENSE)。Go 与 dsh-go 许可声明位于 [core/licenses](core/licenses)，第三方 SDK、Gradle Wrapper 和 Android 平台适用各自的许可。
