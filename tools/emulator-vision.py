@@ -134,7 +134,29 @@ def make_image(path, label):
 
 
 def is_picker(root):
-    return any("documentsui" in n.get("package", "").lower() for n in root.iter("node"))
+    return any(n.get("package") in {"com.android.documentsui", "com.google.android.documentsui"}
+               for n in root.iter("node"))
+
+
+def named_document(root, name):
+    # DocumentsUI announces "file.png, 14.67 kB, 10:54 AM". "Preview the
+    # file file.png" is a separate control and must never select a fixture.
+    matches = []
+    for n in root.iter("node"):
+        if n.get("package") not in {"com.android.documentsui", "com.google.android.documentsui"}:
+            continue
+        if n.get("enabled") == "false":
+            continue
+        for attr in ("content-desc", "text"):
+            label = n.get(attr, "").strip()
+            if label == name or re.fullmatch(re.escape(name) + r",\s*\d[\d.,\s]*[kMGTi]*B,\s*.+", label, re.I):
+                matches.append(n)
+                break
+    # Prefer the file label itself over a containing card if both expose it.
+    leaves = [n for n in matches if not any(c in matches for c in list(n.iter())[1:])]
+    if len(leaves) > 1:
+        raise AssertionError("More than one document matches the exact fixture: " + name)
+    return leaves[0] if leaves else None
 
 
 def choose_image(d, name):
@@ -146,7 +168,7 @@ def choose_image(d, name):
         nonlocal opened_drawer
         if not is_picker(root):
             return None
-        file_node = d.node(root, (name, Path(name).stem), pkg=None)
+        file_node = named_document(root, name)
         if file_node is not None:
             return file_node
         downloads = d.node(root, ("Downloads", "下载", "下載"), pkg=None)
@@ -180,10 +202,14 @@ def open_vision(d, chinese=False):
                      "-c", "android.intent.category.LAUNCHER", "-n", APP + "/.LauncherActivity")
     if "Error" in launch:
         raise AssertionError("Could not launch the installed APK")
+    home = d.wait(lambda r: r if d.node(r, ("Speak", "说句话")) is not None else None,
+                  "The launched app did not display its home controls")
+    in_chinese = d.node(home, ("说句话",)) is not None
+    if chinese != in_chinese:
+        d.tap_app(("更多",) if in_chinese else ("More",))
+        d.tap_app(("语言和显示模式",) if in_chinese else ("Language and display",))
+        d.tap_app(("简体中文",) if chinese else ("English",))
     if chinese:
-        d.tap_app(("More",))
-        d.tap_app(("Language and display",))
-        d.tap_app(("简体中文",))
         home = d.wait(lambda r: r if d.node(r, ("说句话",)) is not None else None,
                       "Could not verify Simplified Chinese home")
         d.record("home-zh", home)
@@ -281,13 +307,28 @@ def main():
             d.adb("push",str(path),remote)
             d.shell("am","broadcast","-a","android.intent.action.MEDIA_SCANNER_SCAN_FILE",
                     "-d","file://"+remote)
-        open_vision(d)
-        read_fixture(d, fixtures[0][0],"2031-07-28","expiry",report)
-        read_fixture(d, fixtures[1][0],"2029-03-19","production_only",report)
-        open_vision(d, chinese=True)
-        read_fixture(d, fixtures[2][0],"2032-06-18","expiry_zh",report)
-        report["status"] = "passed"
-        status = 0
+        failures = []
+        for name, expected, key in (
+                (fixtures[0][0],"2031-07-28","expiry"),
+                (fixtures[1][0],"2029-03-19","production_only"),
+                (fixtures[2][0],"2032-06-18","expiry_zh")):
+            try:
+                d.tree = None
+                open_vision(d, chinese=(key == "expiry_zh"))
+                read_fixture(d,name,expected,key,report)
+                report[key]["status"] = "passed"
+            except (EnvironmentBlocked, AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                outcome = "environment_blocked" if isinstance(exc, EnvironmentBlocked) else "failed"
+                case = report.setdefault(key, {"filename": name})
+                case.update(status=outcome,reason=str(exc))
+                if d.tree is not None:
+                    d.record(key+"-last-ui",d.tree)
+                    case["last_visible_app_text"] = app_text(d.tree)
+                failures.append(outcome)
+        if not failures:
+            report["status"],status = "passed",0
+        elif all(x == "environment_blocked" for x in failures):
+            report["status"],status = "environment_blocked",3
     except EnvironmentBlocked as exc:
         report.update(status="environment_blocked", reason=str(exc))
         status = 3
@@ -296,12 +337,19 @@ def main():
     finally:
         if status and d.tree is not None:
             d.record("last-observed-app-ui",d.tree)
+            report["last_visible_app_text"] = app_text(d.tree)
         if airplane == "0":
             d.adb("shell","cmd","connectivity","airplane-mode","disable",check=False)
         data = json.dumps(report,ensure_ascii=False,indent=2)
         (args.out / "vision.json").write_text(data+"\n",encoding="utf-8")
         print(data,flush=True)
     return status
+
+
+def app_text(root):
+    return [n.get("text","")[:400] for n in root.iter("node")
+            if n.get("package") == APP and n.get("class") == "android.widget.TextView"
+            and n.get("password") != "true" and n.get("text","").strip()][:6]
 
 
 if __name__ == "__main__":

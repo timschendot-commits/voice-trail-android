@@ -49,6 +49,7 @@ if bash tools/emulator-voice.sh 2>&1 | tee "$out/voice-setup.txt"; then
   run_case offline-ui /usr/bin/python3 tools/emulator-smoke.py --out "$out/offline" --require-camera --exercise-voice
   run_case screen-read /usr/bin/python3 tools/emulator-read.py --out "$out/read"
   run_case visual-ocr /usr/bin/python3 tools/emulator-vision.py --out "$out/vision"
+  run_case reminder /usr/bin/python3 tools/emulator-reminder.py --out "$out/reminder"
 else
   echo 'Offline TTS setup failed' | tee -a "$out/status.txt"
   failed=1
