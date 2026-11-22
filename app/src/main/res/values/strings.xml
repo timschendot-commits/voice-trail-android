@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VoiceTrail</string>
+    <string name="service_name">VoiceTrail phone assistance</string>
+    <string name="service_summary">Read the current screen and guide requested actions.</string>
+    <string name="service_description">VoiceTrail reads text that other apps make available to accessibility services. When you ask, it can read the screen aloud, find controls or help you navigate. Screen content is processed on this phone. You can disable this service in Android Accessibility settings.</string>
+</resources>

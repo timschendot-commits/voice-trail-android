@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">声迹助手</string>
+    <string name="service_name">声迹助手手机辅助</string>
+    <string name="service_summary">朗读当前屏幕，并按你的请求引导操作。</string>
+    <string name="service_description">声迹助手能读取其他应用提供给无障碍服务的文字。你发出请求后，它可以朗读屏幕、查找控件或引导操作。屏幕内容在本机处理。你可以随时在系统无障碍设置中关闭此服务。</string>
+</resources>

@@ -1,0 +1,122 @@
+name: Android test build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache-dependency-path: core/go.mod
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android SDK and NDK
+        run: sdkmanager "platforms;android-35" "build-tools;34.0.0" "ndk;28.2.13676358"
+      - name: Run Go core tests
+        working-directory: core
+        run: |
+          go mod download github.com/JopenChen/dsh-go
+          go mod verify
+          go test -mod=mod -race ./...
+      - name: Cross-compile the embedded Go libraries
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          bash core/build-android.sh
+      - name: Build APK and run Android unit tests
+        run: bash ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest
+      - name: Check both native libraries and the packaged permission list
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          unzip -Z1 "$apk" > "$RUNNER_TEMP/apk-files"
+          grep -Fx 'lib/arm64-v8a/libvoicetrail.so' "$RUNNER_TEMP/apk-files"
+          grep -Fx 'lib/x86_64/libvoicetrail.so' "$RUNNER_TEMP/apk-files"
+          "$ANDROID_HOME/build-tools/34.0.0/aapt" dump permissions "$apk" > "$RUNNER_TEMP/apk-permissions"
+          grep -Fq 'android.permission.INTERNET' "$RUNNER_TEMP/apk-permissions"
+          if grep -Eq 'android\.permission\.(READ_CONTACTS|WRITE_CONTACTS|READ_SMS|READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE)' "$RUNNER_TEMP/apk-permissions"; then
+            echo "Unexpected contact, message or storage permission in the merged APK"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "$apk" dist/VoiceTrail-debug.apk
+          (cd dist && sha256sum VoiceTrail-debug.apk > SHA256SUMS)
+      - name: Enable KVM for device tests
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run native integration tests on Android 35
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: bash ./gradlew --no-daemon :app:connectedDebugAndroidTest
+      - name: Save device reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports
+          path: |
+            app/build/reports/androidTests/
+            app/build/reports/tests/
+          if-no-files-found: ignore
+      - name: Offer APK and SHA-256 checksum for testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceTrail-Android-test
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-test-release:
+    if: github.event_name == 'push' && (github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/v'))
+    needs: build
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: publish-test-${{ github.ref }}-${{ github.sha }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: VoiceTrail-Android-test
+          path: dist
+      - name: Publish the tested APK for direct download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_TYPE: ${{ github.ref_type }}
+          SOURCE_NAME: ${{ github.ref_name }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release_tag="preview-${SOURCE_COMMIT:0:12}"
+          if [[ "$SOURCE_TYPE" == "tag" ]]; then
+            release_tag="$SOURCE_NAME"
+          fi
+          if gh release view "$release_tag" --json assets --jq '.assets[].name' > existing-assets; then
+            if grep -Fxq VoiceTrail-debug.apk existing-assets && grep -Fxq SHA256SUMS existing-assets; then
+              exit 0
+            fi
+            gh release upload "$release_tag" dist/VoiceTrail-debug.apk dist/SHA256SUMS --clobber
+          else
+            gh release create "$release_tag" dist/VoiceTrail-debug.apk dist/SHA256SUMS \
+              --target "$SOURCE_COMMIT" --prerelease --title "VoiceTrail $release_tag" \
+              --notes "Android 12+ 测试包 / Test build. Download VoiceTrail-debug.apk. Fresh CI builds use a temporary debug signing key. If Android rejects an update, uninstall the previous preview first. Uninstalling clears local settings."
+          fi
